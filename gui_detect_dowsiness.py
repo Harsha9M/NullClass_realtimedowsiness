@@ -2,6 +2,10 @@ import cv2
 import tkinter as tk
 from PIL import Image, ImageTk
 import threading
+from scipy.spatial import distance
+from imutils import face_utils
+import imutils
+import dlib
 
 class EyeDetectionApp:
     def __init__(self, root, video_source=0):
@@ -20,14 +24,20 @@ class EyeDetectionApp:
         self.btn_stop = tk.Button(root, text="Stop", command=self.stop)
         self.btn_stop.pack(pady=5)
 
-        # Use both face and eye cascade classifiers
-        self.face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
-        self.eye_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_eye.xml')
+        self.detect = dlib.get_frontal_face_detector()
+        self.predict = dlib.shape_predictor("/Users/harshareddy/VsCode/Pythonn/NULLCLASS/NULL_ASSIGNMENT/Detect_dowsiness/shape_predictor_68_face_landmarks.dat")
+
+        (self.lStart, self.lEnd) = face_utils.FACIAL_LANDMARKS_68_IDXS["left_eye"]
+        (self.rStart, self.rEnd) = face_utils.FACIAL_LANDMARKS_68_IDXS["right_eye"]
+
+        self.thresh = 0.25
+        self.frame_check = 20
+        self.smoothing_factor = 0.2
 
         self.is_running = False
         self.update_thread = None
 
-        root.protocol("WM_DELETE_WINDOW", self.on_close)
+        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
     def start(self):
         self.is_running = True
@@ -42,49 +52,66 @@ class EyeDetectionApp:
 
     def on_close(self):
         self.is_running = False
+        self.vid.release() 
         self.root.destroy()
 
     def update(self):
+        ear = 0  
         while self.is_running:
             ret, frame = self.vid.read()
 
             if ret:
-                drowsy = self.detect_drowsiness(frame)
-                text = "Drowsy" if drowsy else "Alert"
+                frame = cv2.flip(frame, 1)  
+                ear = self.update_ear(frame, ear)
+                drowsy = self.detect_drowsiness(ear)
+                text = "Drowsy" if drowsy else ""
                 self.draw_text(frame, text)
 
-                photo = self.convert_to_photo_image(frame)
+               
+                rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                photo = ImageTk.PhotoImage(image=Image.fromarray(rgb_frame))
                 self.canvas.create_image(0, 0, anchor=tk.NW, image=photo)
+                self.canvas.photo = photo  
 
-            self.root.after(10, lambda: None)  # This is needed to update the GUI
-            self.root.update_idletasks()  # Handle events
+            self.root.update()  
 
-    def detect_drowsiness(self, frame):
+        self.vid.release()  
+
+    def update_ear(self, frame, ear):
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-        # Use face cascade classifier to detect faces
-        faces = self.face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
+        subjects = self.detect(gray, 0)
 
-        for (x, y, w, h) in faces:
-            face_roi = gray[y:y + h, x:x + w]
-            
-            # Use eye cascade classifier to detect eyes within each face region
-            eyes = self.eye_cascade.detectMultiScale(face_roi, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
-            
-            # Check if fewer than two eyes are detected, indicating drowsiness
-            if len(eyes) < 2:
-                return True  # Drowsy
+        for subject in subjects:
+            shape = self.predict(gray, subject)
+            shape = face_utils.shape_to_np(shape)
+            leftEye = shape[self.lStart:self.lEnd]
+            rightEye = shape[self.rStart:self.rEnd]
+            leftEAR = self.eye_aspect_ratio(leftEye)
+            rightEAR = self.eye_aspect_ratio(rightEye)
+            ear = self.smoothing_factor * ear + (1 - self.smoothing_factor) * ((leftEAR + rightEAR) / 2.0)
 
-        return False  # Alert
+            leftEyeHull = cv2.convexHull(leftEye)
+            rightEyeHull = cv2.convexHull(rightEye)
+            cv2.drawContours(frame, [leftEyeHull], -1, (0, 255, 0), 1)
+            cv2.drawContours(frame, [rightEyeHull], -1, (0, 255, 0), 1)
+
+        return ear
+
+    def detect_drowsiness(self, ear):
+        if ear < self.thresh:
+            return True  
+        return False  
+
+    def eye_aspect_ratio(self, eye):
+        A = distance.euclidean(eye[1], eye[5])
+        B = distance.euclidean(eye[2], eye[4])
+        C = distance.euclidean(eye[0], eye[3])
+        ear = (A + B) / (2.0 * C)
+        return ear
 
     def draw_text(self, frame, text):
         cv2.putText(frame, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-
-    def convert_to_photo_image(self, frame):
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        img = Image.fromarray(rgb_frame)
-        photo = ImageTk.PhotoImage(image=img)
-        return photo
 
 if __name__ == "__main__":
     root = tk.Tk()
